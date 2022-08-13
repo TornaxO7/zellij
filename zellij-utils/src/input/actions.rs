@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::position::Position;
 
 /// The four directions (left, right, up, down).
-#[derive(Eq, Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[derive(Eq, Clone, Debug, PartialEq, Deserialize, Serialize, Hash)]
 pub enum Direction {
     Left,
     Right,
@@ -17,7 +17,7 @@ pub enum Direction {
     Down,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub enum ResizeDirection {
     Left,
     Right,
@@ -27,13 +27,22 @@ pub enum ResizeDirection {
     Decrease,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
+pub enum MoveTabDirection {
+    Left,
+    Right,
+    Beginning,
+    End,
+    Index(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub enum SearchDirection {
     Down,
     Up,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
 pub enum SearchOption {
     CaseSensitivity,
     WholeWord,
@@ -119,6 +128,7 @@ pub enum Action {
     ToggleTab,
     TabNameInput(Vec<u8>),
     UndoRenameTab,
+    MoveTab(MoveTabDirection),
     /// Run specified command in new pane.
     Run(RunCommandAction),
     /// Detach session and exit

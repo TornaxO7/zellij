@@ -3,6 +3,7 @@
 
 mod clipboard;
 mod copy_command;
+mod screen_util;
 
 use copy_command::CopyCommand;
 use std::env::temp_dir;
@@ -46,6 +47,8 @@ use zellij_utils::{
     pane_size::{Offset, PaneGeom, Size, SizeInPixels, Viewport},
 };
 
+pub use screen_util::{TabID, Tabs};
+
 macro_rules! resize_pty {
     ($pane:expr, $os_input:expr) => {
         if let PaneId::Terminal(ref pid) = $pane.pid() {
@@ -67,8 +70,7 @@ pub const MIN_TERMINAL_WIDTH: usize = 5;
 const MAX_PENDING_VTE_EVENTS: usize = 7000;
 
 pub(crate) struct Tab {
-    pub index: usize,
-    pub position: usize,
+    pub uid: TabID,
     pub name: String,
     pub prev_name: String,
     tiled_panes: TiledPanes,
@@ -328,8 +330,7 @@ impl Tab {
     // FIXME: Still too many arguments for clippy to be happy...
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        index: usize,
-        position: usize,
+        uid: TabID,
         name: String,
         display_area: Size,
         character_cell_size: Rc<RefCell<Option<SizeInPixels>>>,
@@ -348,7 +349,7 @@ impl Tab {
         terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     ) -> Self {
         let name = if name.is_empty() {
-            format!("Tab #{}", index + 1)
+            format!("Tab #{}", uid)
         } else {
             name
         };
@@ -391,8 +392,7 @@ impl Tab {
         };
 
         Tab {
-            index,
-            position,
+            uid,
             tiled_panes,
             floating_panes,
             suppressed_panes: HashMap::new(),
@@ -428,7 +428,7 @@ impl Tab {
         &mut self,
         layout: Layout,
         new_pids: Vec<RawFd>,
-        tab_index: usize,
+        tab_uid: TabID,
         client_id: ClientId,
     ) {
         if self.tiled_panes.has_panes() {
@@ -462,7 +462,7 @@ impl Tab {
                 let (pid_tx, pid_rx) = channel();
                 let pane_title = run.location.to_string();
                 self.senders
-                    .send_to_plugin(PluginInstruction::Load(pid_tx, run, tab_index, client_id))
+                    .send_to_plugin(PluginInstruction::Load(pid_tx, run, tab_uid, client_id))
                     .unwrap();
                 let pid = pid_rx.recv().unwrap();
                 let mut new_plugin = PluginPane::new(

@@ -24,7 +24,7 @@ use crate::{
     pty::{ClientOrTabIndex, PtyInstruction},
     screen::ScreenInstruction,
     thread_bus::{Bus, ThreadSenders},
-    ClientId,
+    ClientId, tab::TabID,
 };
 
 use zellij_utils::{
@@ -41,7 +41,7 @@ use zellij_utils::{
 
 #[derive(Clone, Debug)]
 pub(crate) enum PluginInstruction {
-    Load(Sender<u32>, RunPlugin, usize, ClientId), // tx_pid, plugin metadata, tab_index, client_ids
+    Load(Sender<u32>, RunPlugin, TabID, ClientId), // tx_pid, plugin metadata, tab_index, client_ids
     Update(Option<u32>, Option<ClientId>, Event), // Focused plugin / broadcast, client_id, event data
     Render(Sender<String>, u32, ClientId, usize, usize), // String buffer, plugin id, client_id, rows, cols
     Unload(u32),                                         // plugin_id

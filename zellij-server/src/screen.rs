@@ -6,6 +6,7 @@ use std::os::unix::io::RawFd;
 use std::rc::Rc;
 use std::str;
 
+use zellij_utils::input::actions::MoveTabDirection;
 use zellij_utils::input::options::Clipboard;
 use zellij_utils::pane_size::{Size, SizeInPixels};
 use zellij_utils::{input::command::TerminalAction, input::layout::Layout, position::Position};
@@ -13,6 +14,8 @@ use zellij_utils::{input::command::TerminalAction, input::layout::Layout, positi
 use crate::panes::alacritty_functions::xparse_color;
 use crate::panes::terminal_character::AnsiCode;
 
+use crate::tab::TabID;
+use crate::tab::Tabs;
 use crate::{
     output::Output,
     panes::sixel::SixelImageStore,
@@ -87,6 +90,7 @@ pub enum ScreenInstruction {
     MovePaneRight(ClientId),
     MovePaneLeft(ClientId),
     Exit,
+    MoveTab(ClientId, MoveTabDirection),
     DumpScreen(String, ClientId),
     EditScrollback(ClientId),
     ScrollUp(ClientId),
@@ -167,6 +171,7 @@ impl From<&ScreenInstruction> for ScreenContext {
             ScreenInstruction::MoveFocusLeftOrPreviousTab(..) => {
                 ScreenContext::MoveFocusLeftOrPreviousTab
             },
+            ScreenInstruction::MoveTab(..) => ScreenContext::MoveTab,
             ScreenInstruction::MoveFocusDown(..) => ScreenContext::MoveFocusDown,
             ScreenInstruction::MoveFocusUp(..) => ScreenContext::MoveFocusUp,
             ScreenInstruction::MoveFocusRight(..) => ScreenContext::MoveFocusRight,
@@ -282,7 +287,7 @@ pub(crate) struct Screen {
     /// An optional maximal amount of panes allowed per [`Tab`] in this [`Screen`] instance.
     max_panes: Option<usize>,
     /// A map between this [`Screen`]'s tabs and their ID/key.
-    tabs: BTreeMap<usize, Tab>,
+    tabs: Tabs<ClientId>,
     /// The full size of this [`Screen`].
     size: Size,
     pixel_dimensions: PixelDimensions,
@@ -293,9 +298,6 @@ pub(crate) struct Screen {
     terminal_emulator_colors: Rc<RefCell<Palette>>,
     terminal_emulator_color_codes: Rc<RefCell<HashMap<usize, String>>>,
     connected_clients: Rc<RefCell<HashSet<ClientId>>>,
-    /// The indices of this [`Screen`]'s active [`Tab`]s.
-    active_tab_indices: BTreeMap<ClientId, usize>,
-    tab_history: BTreeMap<ClientId, Vec<usize>>,
     mode_info: BTreeMap<ClientId, ModeInfo>,
     default_mode_info: ModeInfo, // TODO: restructure ModeInfo to prevent this duplication
     style: Style,
@@ -324,28 +326,15 @@ impl Screen {
             sixel_image_store: Rc::new(RefCell::new(SixelImageStore::default())),
             style: client_attributes.style,
             connected_clients: Rc::new(RefCell::new(HashSet::new())),
-            active_tab_indices: BTreeMap::new(),
-            tabs: BTreeMap::new(),
+            tabs: Tabs::new(),
             overlay: OverlayWindow::default(),
             terminal_emulator_colors: Rc::new(RefCell::new(Palette::default())),
             terminal_emulator_color_codes: Rc::new(RefCell::new(HashMap::new())),
-            tab_history: BTreeMap::new(),
             mode_info: BTreeMap::new(),
             default_mode_info: mode_info,
             draw_pane_frames,
             session_is_mirrored,
             copy_options,
-        }
-    }
-
-    /// Returns the index where a new [`Tab`] should be created in this [`Screen`].
-    /// Currently, this is right after the last currently existing tab, or `0` if
-    /// no tabs exist in this screen yet.
-    fn get_new_tab_index(&self) -> usize {
-        if let Some(index) = self.tabs.keys().last() {
-            *index + 1
-        } else {
-            0
         }
     }
 
@@ -409,9 +398,10 @@ impl Screen {
             },
         }
     }
-    /// A helper function to switch to a new tab at specified position.
-    fn switch_active_tab(&mut self, new_tab_pos: usize, client_id: ClientId) {
-        if let Some(new_tab) = self.tabs.values().find(|t| t.position == new_tab_pos) {
+    /// A helper function to set the focus to the specified tab-position.
+    fn focus_tab_by_index(&mut self, tab_index: TabID, client_id: ClientId) {
+        // if let Some(new_tab) = self.tabs.values().find(|t| t.position == new_tab_pos) {
+        if let Some(selected_tab) = self.tabs.get_tab(tab_index) {
             if let Some(current_tab) = self.get_active_tab(client_id) {
                 // If new active tab is same as the current one, do nothing.
                 if current_tab.position == new_tab_pos {
@@ -453,34 +443,40 @@ impl Screen {
     }
 
     /// Sets this [`Screen`]'s active [`Tab`] to the next tab.
-    pub fn switch_tab_next(&mut self, client_id: ClientId) {
+    pub fn focus_next_tab(&mut self, client_id: ClientId) {
         if let Some(active_tab) = self.get_active_tab(client_id) {
             let active_tab_pos = active_tab.position;
             let new_tab_pos = (active_tab_pos + 1) % self.tabs.len();
-            self.switch_active_tab(new_tab_pos, client_id);
+            self.focus_tab_by_index(new_tab_pos, client_id);
         } else {
             log::error!("Active tab not found for client_id: {:?}", client_id);
         }
     }
 
+    ///
+    pub fn move_tab(&mut self, client_id: ClientId, direction: MoveTabDirection) {
+        let active_tab = self.get_active_tab(client_id);
+        todo!();
+    }
+
     /// Sets this [`Screen`]'s active [`Tab`] to the previous tab.
-    pub fn switch_tab_prev(&mut self, client_id: ClientId) {
+    pub fn focus_prev_tab(&mut self, client_id: ClientId) {
         if let Some(active_tab) = self.get_active_tab(client_id) {
             let active_tab_pos = active_tab.position;
             let new_tab_pos = if active_tab_pos == 0 {
-                self.tabs.len() - 1
+                self.tabs.amount_tabs() - 1
             } else {
                 active_tab_pos - 1
             };
 
-            self.switch_active_tab(new_tab_pos, client_id);
+            self.focus_tab_by_index(new_tab_pos, client_id);
         } else {
             log::error!("Active tab not found for client_id: {:?}", client_id);
         }
     }
 
     pub fn go_to_tab(&mut self, tab_index: usize, client_id: ClientId) {
-        self.switch_active_tab(tab_index - 1, client_id);
+        self.focus_tab_by_index(tab_index - 1, client_id);
     }
 
     fn close_tab_at_index(&mut self, tab_index: usize) {
@@ -596,54 +592,17 @@ impl Screen {
             .unwrap();
     }
 
-    /// Returns a mutable reference to this [`Screen`]'s tabs.
-    pub fn get_tabs_mut(&mut self) -> &mut BTreeMap<usize, Tab> {
-        &mut self.tabs
-    }
-
-    /// Returns an immutable reference to this [`Screen`]'s active [`Tab`].
-    pub fn get_active_tab(&self, client_id: ClientId) -> Option<&Tab> {
-        match self.active_tab_indices.get(&client_id) {
-            Some(tab) => self.tabs.get(tab),
-            None => None,
-        }
-    }
-
-    /// Returns an immutable reference to this [`Screen`]'s previous active [`Tab`].
-    /// Consumes the last entry in tab history.
-    pub fn get_previous_tab(&mut self, client_id: ClientId) -> Option<&Tab> {
-        match self.tab_history.get_mut(&client_id).unwrap().pop() {
-            Some(tab) => self.tabs.get(&tab),
-            None => None,
-        }
-    }
-
-    /// Returns a mutable reference to this [`Screen`]'s active [`Tab`].
-    pub fn get_active_tab_mut(&mut self, client_id: ClientId) -> Option<&mut Tab> {
-        match self.active_tab_indices.get(&client_id) {
-            Some(tab) => self.tabs.get_mut(tab),
-            None => None,
-        }
-    }
-
     /// Returns a mutable reference to this [`Screen`]'s active [`Overlays`].
     pub fn get_active_overlays_mut(&mut self) -> &mut Vec<Overlay> {
         &mut self.overlay.overlay_stack
     }
 
-    /// Returns a mutable reference to this [`Screen`]'s indexed [`Tab`].
-    pub fn get_indexed_tab_mut(&mut self, tab_index: usize) -> Option<&mut Tab> {
-        self.get_tabs_mut().get_mut(&tab_index)
-    }
-
     /// Creates a new [`Tab`] in this [`Screen`], applying the specified [`Layout`]
     /// and switching to it.
     pub fn new_tab(&mut self, layout: Layout, new_pids: Vec<RawFd>, client_id: ClientId) {
-        let tab_index = self.get_new_tab_index();
-        let position = self.tabs.len();
+        let new_tab_id = self.tabs.get_free_tab_index();
         let mut tab = Tab::new(
-            tab_index,
-            position,
+            new_tab_id,
             String::new(),
             self.size,
             self.character_cell_size.clone(),
@@ -661,80 +620,76 @@ impl Screen {
             self.terminal_emulator_colors.clone(),
             self.terminal_emulator_color_codes.clone(),
         );
-        tab.apply_layout(layout, new_pids, tab_index, client_id);
-        if self.session_is_mirrored {
-            if let Some(active_tab) = self.get_active_tab_mut(client_id) {
-                let client_mode_infos_in_source_tab = active_tab.drain_connected_clients(None);
-                tab.add_multiple_clients(client_mode_infos_in_source_tab);
-                if active_tab.has_no_connected_clients() {
-                    active_tab.visible(false);
-                }
-            }
-            let all_connected_clients: Vec<ClientId> =
-                self.connected_clients.borrow().iter().copied().collect();
-            for client_id in all_connected_clients {
-                self.update_client_tab_focus(client_id, tab_index);
-            }
-        } else if let Some(active_tab) = self.get_active_tab_mut(client_id) {
-            let client_mode_info_in_source_tab =
-                active_tab.drain_connected_clients(Some(vec![client_id]));
-            tab.add_multiple_clients(client_mode_info_in_source_tab);
-            if active_tab.has_no_connected_clients() {
-                active_tab.visible(false);
-            }
-            self.update_client_tab_focus(client_id, tab_index);
-        }
+        tab.apply_layout(layout, new_pids, new_tab_id, client_id);
         tab.update_input_modes();
         tab.visible(true);
-        self.tabs.insert(tab_index, tab);
-        if !self.active_tab_indices.contains_key(&client_id) {
+        self.tabs.add_tab(tab);
+
+        if let Some(focused_tab) = self.tabs.get_focused_tab(client_id) {
+            let clients_to_drain = if self.session_is_mirrored {
+                None
+            } else {
+                Some(vec![client_id])
+            };
+
+            let client_mode_infos_in_source_tab =
+                focused_tab.drain_connected_clients(clients_to_drain);
+            tab.add_multiple_clients(client_mode_infos_in_source_tab);
+
+            if focused_tab.has_no_connected_clients() {
+                focused_tab.visible(false);
+            }
+
+            if self.session_is_mirrored {
+                let all_connected_clients: Vec<ClientId> =
+                    self.connected_clients.borrow().iter().copied().collect();
+                for client_id in all_connected_clients {
+                    self.update_client_tab_focus(client_id, new_tab_id);
+                }
+            } else {
+                self.update_client_tab_focus(client_id, new_tab_id);
+            }
+        } else {
             // this means this is a new client and we need to add it to our state properly
             self.add_client(client_id);
         }
-        self.update_tabs();
 
+        self.update_tabs();
         self.render();
     }
 
     pub fn add_client(&mut self, client_id: ClientId) {
-        let mut tab_history = vec![];
-        if let Some((_first_client, first_tab_history)) = self.tab_history.iter().next() {
-            tab_history = first_tab_history.clone();
-        }
+        // let tab_history = match self.tab_history.iter().next() {
+        //     Some(_, first_tab_history) => first_tab_history.clone(),
+        //     None => Vec::new(),
+        //     tab_history = first_tab_history.clone();
+        // }
 
-        let tab_index = if let Some((_first_client, first_active_tab_index)) =
-            self.active_tab_indices.iter().next()
-        {
-            *first_active_tab_index
-        } else if self.tabs.contains_key(&0) {
-            0
-        } else if let Some(tab_index) = self.tabs.keys().next() {
-            tab_index.to_owned()
-        } else {
-            panic!("Can't find a valid tab to attach client to!");
-        };
+        // let tab_index = if let Some((_first_client, first_active_tab_index)) = self.active_tab_indices.iter().next()
+        // {
+        //     *first_active_tab_index
+        // } else if self.tabs.contains_key(&0) {
+        //     0
+        // } else if let Some(tab_index) = self.tabs.keys().next() {
+        //     tab_index.to_owned()
+        // } else {
+        //     panic!("Can't find a valid tab to attach client to!");
+        // };
 
-        self.active_tab_indices.insert(client_id, tab_index);
         self.connected_clients.borrow_mut().insert(client_id);
-        self.tab_history.insert(client_id, tab_history);
         self.tabs
-            .get_mut(&tab_index)
+            .get_tab(tab_index)
             .unwrap_or_else(|| panic!("Failed to attach client to tab with index {tab_index}"))
             .add_client(client_id, None);
     }
     pub fn remove_client(&mut self, client_id: ClientId) {
-        self.tabs.iter_mut().for_each(|(_, tab)| {
+        self.tabs.get_mut_tabs().iter_mut().for_each(|(_, tab)| {
             tab.remove_client(client_id);
             if tab.has_no_connected_clients() {
                 tab.visible(false);
             }
         });
-        if self.active_tab_indices.contains_key(&client_id) {
-            self.active_tab_indices.remove(&client_id);
-        }
-        if self.tab_history.contains_key(&client_id) {
-            self.tab_history.remove(&client_id);
-        }
+        self.tabs.remove_key(&client_id);
         self.connected_clients.borrow_mut().remove(&client_id);
         self.update_tabs();
     }
@@ -859,7 +814,7 @@ impl Screen {
     pub fn move_focus_left_or_previous_tab(&mut self, client_id: ClientId) {
         if let Some(active_tab) = self.get_active_tab_mut(client_id) {
             if !active_tab.move_focus_left(client_id) {
-                self.switch_tab_prev(client_id);
+                self.focus_prev_tab(client_id);
             }
         } else {
             log::error!("Active tab not found for client id: {:?}", client_id);
@@ -868,7 +823,7 @@ impl Screen {
     pub fn move_focus_right_or_next_tab(&mut self, client_id: ClientId) {
         if let Some(active_tab) = self.get_active_tab_mut(client_id) {
             if !active_tab.move_focus_right(client_id) {
-                self.switch_tab_next(client_id);
+                self.focus_next_tab(client_id);
             }
         } else {
             log::error!("Active tab not found for client id: {:?}", client_id);
@@ -1085,6 +1040,10 @@ pub(crate) fn screen_thread_main(
                     .move_focus_up(client_id));
                 screen.render();
             },
+            ScreenInstruction::MoveTab(client_id, direction) => {
+                screen.move_tab(client_id, direction);
+                screen.render();
+            },
             ScreenInstruction::DumpScreen(file, client_id) => {
                 active_tab!(screen, client_id, |tab: &mut Tab| tab
                     .dump_active_terminal_screen(Some(file.to_string()), client_id));
@@ -1229,12 +1188,12 @@ pub(crate) fn screen_thread_main(
                 screen.render();
             },
             ScreenInstruction::SwitchTabNext(client_id) => {
-                screen.switch_tab_next(client_id);
+                screen.focus_next_tab(client_id);
                 screen.unblock_input();
                 screen.render();
             },
             ScreenInstruction::SwitchTabPrev(client_id) => {
-                screen.switch_tab_prev(client_id);
+                screen.focus_prev_tab(client_id);
                 screen.unblock_input();
                 screen.render();
             },

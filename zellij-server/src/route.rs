@@ -11,7 +11,7 @@ use zellij_utils::{
     channels::SenderWithContext,
     data::Event,
     input::{
-        actions::{Action, Direction, ResizeDirection, SearchDirection, SearchOption},
+        actions::{Action, Direction, ResizeDirection, SearchDirection, SearchOption, MoveTabDirection},
         command::TerminalAction,
         get_mode_info,
     },
@@ -247,6 +247,10 @@ fn route_action(
                 None => PtyInstruction::SpawnTerminal(shell, ClientOrTabIndex::ClientId(client_id)),
             };
             session.senders.send_to_pty(pty_instr).unwrap();
+        },
+        Action::MoveTab(direction) => {
+            let screen_instr = ScreenInstruction::MoveTab(client_id, direction);
+            session.senders.send_to_screen(screen_instr).unwrap();
         },
         Action::TogglePaneEmbedOrFloating => {
             session
